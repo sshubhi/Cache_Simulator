@@ -90,32 +90,54 @@ uint32_t get_index_from_addr (uint32_t addr, uint32_t num_sets) {
 }
 
 uint32_t get_tag_from_addr (uint32_t addr, uint32_t num_sets) {
-		int index_bits = (log2(num_sets - 1)) + 1;
-		int block_offset_bits = (log2(blocksize - 1)) + 1;
-		uint32_t tag = addr >> block_offset_bits;
-		tag = tag >> index_bits;
-		return tag;
-	
+	int index_bits = (log2(num_sets - 1)) + 1;
+	int block_offset_bits = (log2(blocksize - 1)) + 1;
+	uint32_t tag = addr >> block_offset_bits;
+	tag = tag >> index_bits;
+	return tag;
 }
 
-void remove_cache_line (set* cache, uint32_t addr, uint32_t num_sets) {
+uint32_t create_cache_addr(uint32_t evict_index,uint32_t evict_tag) {
+	uint32_t cache_addr = 0;
+	uint32_t temp = 0;
+	int index_bits = 0;
+	int block_offset_bits = (log2(blocksize - 1)) + 1;
+	
+	
+	if (l2cacheSets != 1) 
+		index_bits = (log2(l2cacheSets - 1)) + 1;
+	cache_addr = evict_tag << index_bits;
+	cache_addr = cache_addr << block_offset_bits;
+	temp = evict_index << block_offset_bits;
+	
+	cache_addr = cache_addr | temp;
+	return cache_addr;
+}
+
+void remove_cache_line (set* cache, uint32_t addr, uint32_t num_sets, uint32_t assoc) {
   	int index = get_index_from_addr(addr, num_sets);
 	uint32_t tag   = get_tag_from_addr(addr, num_sets);	
 	int b_idx = -1;
-
+	
 	for (int i=0; i<cache[index].size; i++) {
 		if (tag == cache[index].block[i]) {
 			b_idx = i;
 			break;
 		}
 	}
-	
-	if (b_idx != -1) {	// If line is present in L1 cache
-		for (int i = b_idx; i <  (cache[index].size - 1); i++) {
-			cache[index].block[i] = cache[index].block[i+1];
+	if (assoc != 1) {
+		if (b_idx != -1) {	// If line is present in L1 cache
+			for (int i = b_idx; i <  (cache[index].size - 1); i++) {
+				cache[index].block[i] = cache[index].block[i+1];
+			}
+			cache[index].size--;
 		}
-		cache[index].size--;
-	}	
+	}
+	else if ((assoc == 1) && (cache[index].size == 1)){
+		if (cache[index].block[0] == tag) {
+				cache[index].size--;
+		}
+	}
 }
 // Initialize the Cache Hierarchy
 //
@@ -160,56 +182,79 @@ icache_access(uint32_t addr)
 { 	if(icacheSets==0){
 		return l2cache_access(addr);
 	}
-  	int index = get_index_from_addr(addr, icacheSets);
+  	uint32_t index = get_index_from_addr(addr, icacheSets);
 	uint32_t tag   = get_tag_from_addr(addr, icacheSets);	
 	int b_idx = -1;
 	int size = icache[index].size;
 	uint32_t l2_access_time = 0;
 	icacheRefs++;
 	
-	for (int i=0; i<icache[index].size; i++) {
-		if (tag == icache[index].block[i]) {
-			b_idx = i;
-			break;
+	if (icache[index].size == 0)
+		b_idx = -1;
+	else {
+		for (int i=0; i<icache[index].size; i++) {
+			if (tag == icache[index].block[i]) {
+				b_idx = i;
+				break;
+			}
 		}
 	}
 	
-	if (b_idx == -1) {    //Miss. It is a a new line
-		l2_access_time = l2cache_access(addr);
-		if (icache[index].size == 0) {		// First tag element, goes to the head of the queue
+	if (icacheAssoc != 1) {
+		if (b_idx == -1) {    //Miss. It is a a new line
+			l2_access_time = l2cache_access(addr);
+			if (icache[index].size == 0) {		// First tag element, goes to the head of the queue
+				icache[index].block[0] = tag;
+				icache[index].size++;
+			}
+			else if (icache[index].size < icacheAssoc) { 	// No need to eliminate.
+				icache[index].block[size] = tag;
+				icache[index].size++;
+			}
+			else if (icache[index].size == icacheAssoc) {
+				for (int i=1; i< icache[index].size; i++) {
+					icache[index].block[i-1] = icache[index].block[i];	
+				}
+				icache[index].block[size-1] = tag;
+			}
+			icacheMisses++;
+		}
+		else {		// It is a hit. No size updates. Reshuffling to satisfy LRU policy.
+			
+			if (icache[index].size == 1) {;}
+			
+			else if (icache[index].size < icacheAssoc) {
+				for (int i = b_idx; i< icache[index].size - 1; i++) {
+					icache[index].block[i] = icache[index].block[i+1];	
+				}
+				icache[index].block[size-1] = tag;
+			}
+			else if (icache[index].size == icacheAssoc) {
+				for (int i = b_idx; i< icache[index].size - 1; i++) {
+					icache[index].block[i] = icache[index].block[i+1];	
+				}
+				icache[index].block[size-1] = tag;
+			}
+			return icacheHitTime;
+		}
+	}
+	else {
+		if (icache[index].size != 0) {
+			if (icache[index].block[0] == tag) //Hit
+				return icacheHitTime;
+			else {
+				icache[index].block[0] = tag;
+				l2_access_time = l2cache_access(addr);
+				icacheMisses++;
+			}
+		}
+		else { //Definitely a miss
 			icache[index].block[0] = tag;
+			l2_access_time = l2cache_access(addr);
+			icacheMisses++;
 			icache[index].size++;
 		}
-		else if (icache[index].size < icacheAssoc) { 	// No need to eliminate.
-			icache[index].block[size] = tag;
-			icache[index].size++;
-		}
-		else if (icache[index].size == icacheAssoc) {
-			for (int i=1; i< icache[index].size; i++) {
-				icache[index].block[i-1] = icache[index].block[i];	
-			}
-			icache[index].block[size-1] = tag;
-		}
-		icacheMisses++;
-	}
-	else {		// It is a hit. No size updates. Reshuffling to satisfy LRU policy.
-		
-		if (icache[index].size == 1) {;}
-		
-		else if (icache[index].size < icacheAssoc) {
-			for (int i = b_idx; i< icache[index].size - 1; i++) {
-				icache[index].block[i] = icache[index].block[i+1];	
-			}
-			icache[index].block[size-1] = tag;
-		}
-		else if (icache[index].size == icacheAssoc) {
-			for (int i = b_idx; i< icache[index].size - 1; i++) {
-				icache[index].block[i] = icache[index].block[i+1];	
-			}
-			icache[index].block[size-1] = tag;
-		}
-		return icacheHitTime;
-	}
+	}	
 	icachePenalties += l2_access_time;
     return l2_access_time + icacheHitTime;
 }
@@ -222,7 +267,7 @@ dcache_access(uint32_t addr)
 { 	if(dcacheSets==0){
 		return l2cache_access(addr);
 	}
-   	int index = get_index_from_addr(addr, dcacheSets);
+   	uint32_t index = get_index_from_addr(addr, dcacheSets);
 	uint32_t tag   = get_tag_from_addr(addr, dcacheSets);	
 	int b_idx = -1;
 	int size = dcache[index].size;
@@ -230,49 +275,72 @@ dcache_access(uint32_t addr)
 	
 	dcacheRefs++;
 	
-	for (int i=0; i<dcache[index].size; i++) {
-		if (tag == dcache[index].block[i]) {
-			b_idx = i;
-			break;
+	if (dcache[index].size == 0)
+		b_idx = -1;
+	else {
+		for (int i=0; i<dcache[index].size; i++) {
+			if (tag == dcache[index].block[i]) {
+				b_idx = i;
+				break;
+			}
+		}
+	}
+	if (dcacheAssoc != 1) {
+		if (b_idx == -1) {    //Miss. It is a a new line
+			l2_access_time = l2cache_access(addr);
+			if (dcache[index].size == 0) {		// First tag element, goes to the head of the queue
+				dcache[index].block[0] = tag;
+				dcache[index].size++;
+			}
+			else if (dcache[index].size < dcacheAssoc) { 	// No need to eliminate.
+				dcache[index].block[size] = tag;
+				dcache[index].size++;
+			}
+			else if (dcache[index].size == dcacheAssoc) {
+				for (int i=1; i< dcache[index].size; i++) {
+					dcache[index].block[i-1] = dcache[index].block[i];	
+				}
+				dcache[index].block[size-1] = tag;
+			}
+			dcacheMisses++;
+		}
+		else {		// It is a hit. No size updates. Reshuffling to satisfy LRU policy.
+			
+			if (dcache[index].size == 1) {;}
+			
+			else if (dcache[index].size < dcacheAssoc) {
+				for (int i = b_idx; i< dcache[index].size - 1; i++) {
+					dcache[index].block[i] = dcache[index].block[i+1];	
+				}
+				dcache[index].block[size-1] = tag;
+			}
+			else if (dcache[index].size == dcacheAssoc) {
+				for (int i = b_idx; i< dcache[index].size - 1; i++) {
+					dcache[index].block[i] = dcache[index].block[i+1];	
+				}
+				dcache[index].block[size-1] = tag;
+			}
+			return dcacheHitTime;
+		}
+	}
+	else {
+		if (dcache[index].size != 0) {
+			if (dcache[index].block[0] == tag) //Hit
+				return dcacheHitTime;
+			else {
+				dcache[index].block[0] = tag;
+				l2_access_time = l2cache_access(addr);
+				dcacheMisses++;
+			}
+		}
+		else {	// Definitely a miss
+			dcache[index].block[0] = tag;
+			l2_access_time = l2cache_access(addr);
+			dcacheMisses++;	
+			dcache[index].size++;
 		}
 	}
 	
-	if (b_idx == -1) {    //Miss. It is a a new line
-		l2_access_time = l2cache_access(addr);
-		if (dcache[index].size == 0) {		// First tag element, goes to the head of the queue
-			dcache[index].block[0] = tag;
-			dcache[index].size++;
-		}
-		else if (dcache[index].size < icacheAssoc) { 	// No need to eliminate.
-			dcache[index].block[size] = tag;
-			dcache[index].size++;
-		}
-		else if (dcache[index].size == icacheAssoc) {
-			for (int i=1; i< dcache[index].size; i++) {
-				dcache[index].block[i-1] = dcache[index].block[i];	
-			}
-			dcache[index].block[size-1] = tag;
-		}
-		dcacheMisses++;
-	}
-	else {		// It is a hit. No size updates. Reshuffling to satisfy LRU policy.
-		
-		if (dcache[index].size == 1) {;}
-		
-		else if (dcache[index].size < icacheAssoc) {
-			for (int i = b_idx; i< dcache[index].size - 1; i++) {
-				dcache[index].block[i] = dcache[index].block[i+1];	
-			}
-			dcache[index].block[size-1] = tag;
-		}
-		else if (dcache[index].size == icacheAssoc) {
-			for (int i = b_idx; i< dcache[index].size - 1; i++) {
-				dcache[index].block[i] = dcache[index].block[i+1];	
-			}
-			dcache[index].block[size-1] = tag;
-		}
-		return dcacheHitTime;
-	}
  	dcachePenalties += l2_access_time;
     return l2_access_time + dcacheHitTime;
 }
@@ -285,58 +353,89 @@ l2cache_access(uint32_t addr)
 { 	if(l2cacheSets==0){
 		return memspeed;
 	}
-  	int index = get_index_from_addr(addr, l2cacheSets);
+  	uint32_t index = get_index_from_addr(addr, l2cacheSets);
 	uint32_t tag   = get_tag_from_addr(addr, l2cacheSets);	
 	int b_idx = -1;
 	int size = l2cache[index].size;	
+	uint32_t evict_index;
+	uint32_t evict_tag;
 	
 	l2cacheRefs++;
 	
-	for (int i=0; i<l2cache[index].size; i++) {
-		if (tag == l2cache[index].block[i]) {
-			b_idx = i;
-			break;
+	if (l2cache[index].size == 0)
+		b_idx = -1;
+	else {		
+		for (int i=0; i<l2cache[index].size; i++) {
+			if (tag == l2cache[index].block[i]) {
+				b_idx = i;
+				break;
+			}
 		}
 	}
 	
-	if (b_idx == -1) {    //Miss. It is a a new line
-		if (l2cache[index].size == 0) {		// First tag element, goes to the head of the queue
-			l2cache[index].block[0] = tag;
-			l2cache[index].size++;
-		}
-		else if (l2cache[index].size < icacheAssoc) { 	// No need to eliminate.
-			l2cache[index].block[size] = tag;
-			l2cache[index].size++;
-		}
-		else if (l2cache[index].size == icacheAssoc) {
-			for (int i=1; i< l2cache[index].size; i++) {
-				l2cache[index].block[i-1] = l2cache[index].block[i];	
+	if (l2cacheAssoc != 1) {
+		if (b_idx == -1) {    //Miss. It is a a new line
+			if (l2cache[index].size == 0) {		// First tag element, goes to the head of the queue
+				l2cache[index].block[0] = tag;
+				l2cache[index].size++;
 			}
-			l2cache[index].block[size-1] = tag;
-		}	
-		if (inclusive) {
-			remove_cache_line(icache, addr, icacheSets);
-			remove_cache_line(dcache, addr, dcacheSets);
+			else if (l2cache[index].size < l2cacheAssoc) { 	// No need to eliminate.
+				l2cache[index].block[size] = tag;
+				l2cache[index].size++;
+			}
+			else if (l2cache[index].size == l2cacheAssoc) {
+				evict_index = index;
+				evict_tag = l2cache[index].block[0];
+				for (int i=1; i< l2cache[index].size; i++) {
+					l2cache[index].block[i-1] = l2cache[index].block[i];	
+				}
+				l2cache[index].block[size-1] = tag;
+				if (inclusive) {
+				remove_cache_line(icache, create_cache_addr(evict_index,evict_tag), icacheSets,icacheAssoc);
+				remove_cache_line(dcache, create_cache_addr(evict_index,evict_tag), dcacheSets,dcacheAssoc);
+				}
+			}	
+			l2cacheMisses++;
 		}
-		l2cacheMisses++;
+		else {		// It is a hit. No size updates. Reshuffling to satisfy LRU policy.
+			
+			if (l2cache[index].size == 1) {;}
+			
+			else if (l2cache[index].size < l2cacheAssoc) {
+				for (int i = b_idx; i< l2cache[index].size - 1; i++) {
+					l2cache[index].block[i] = l2cache[index].block[i+1];	
+				}
+				l2cache[index].block[size-1] = tag;
+			}
+			else if (l2cache[index].size == l2cacheAssoc) {
+				for (int i = b_idx; i< l2cache[index].size - 1; i++) {
+					l2cache[index].block[i] = l2cache[index].block[i+1];	
+				}
+				l2cache[index].block[size-1] = tag;
+			}
+			return l2cacheHitTime;
+		}
 	}
-	else {		// It is a hit. No size updates. Reshuffling to satisfy LRU policy.
-		
-		if (l2cache[index].size == 1) {;}
-		
-		else if (l2cache[index].size < icacheAssoc) {
-			for (int i = b_idx; i< l2cache[index].size - 1; i++) {
-				l2cache[index].block[i] = l2cache[index].block[i+1];	
+	else {
+		if (l2cache[index].size != 0) {
+			if (l2cache[index].block[0] == tag) //Hit
+				return l2cacheHitTime;
+			else {
+				evict_index = index;
+				evict_tag = l2cache[index].block[0];
+				l2cache[index].block[0] = tag;
+				if (inclusive) {
+					remove_cache_line(icache, create_cache_addr(evict_index,evict_tag), icacheSets,icacheAssoc);
+					remove_cache_line(dcache, create_cache_addr(evict_index,evict_tag), dcacheSets,dcacheAssoc);
+				}
+				l2cacheMisses++;
 			}
-			l2cache[index].block[size-1] = tag;
 		}
-		else if (l2cache[index].size == icacheAssoc) {
-			for (int i = b_idx; i< l2cache[index].size - 1; i++) {
-				l2cache[index].block[i] = l2cache[index].block[i+1];	
-			}
-			l2cache[index].block[size-1] = tag;
+		else {
+			l2cache[index].block[0] = tag;
+			l2cacheMisses++;
+			l2cache[index].size++;
 		}
-		return l2cacheHitTime;
 	}
     l2cachePenalties += memspeed;
     return memspeed + l2cacheHitTime;
