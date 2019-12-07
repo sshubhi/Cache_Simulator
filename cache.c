@@ -75,8 +75,8 @@ uint32_t get_index_from_addr (uint32_t addr, uint32_t num_sets) {
 	if (num_sets == 1)
 		return 1;
 	else {
-		int index_bits = int(log2(num_sets - 1)) + 1;
-		int block_offset_bits = int(log2(blocksize - 1)) + 1;
+		int index_bits = (log2(num_sets - 1)) + 1;
+		int block_offset_bits = (log2(blocksize - 1)) + 1;
 		uint32_t index = addr >> block_offset_bits;
 		uint32_t mask = 1;
 		
@@ -90,8 +90,8 @@ uint32_t get_index_from_addr (uint32_t addr, uint32_t num_sets) {
 }
 
 uint32_t get_tag_from_addr (uint32_t addr, uint32_t num_sets) {
-		int index_bits = int(log2(num_sets - 1)) + 1;
-		int block_offset_bits = int(log2(blocksize - 1)) + 1;
+		int index_bits = (log2(num_sets - 1)) + 1;
+		int block_offset_bits = (log2(blocksize - 1)) + 1;
 		uint32_t tag = addr >> block_offset_bits;
 		tag = tag >> index_bits;
 		return tag;
@@ -157,12 +157,15 @@ init_cache()
 //
 uint32_t
 icache_access(uint32_t addr)
-{
+{ 	if(icacheSets==0){
+		return l2cache_access(addr);
+	}
   	int index = get_index_from_addr(addr, icacheSets);
 	uint32_t tag   = get_tag_from_addr(addr, icacheSets);	
 	int b_idx = -1;
 	int size = icache[index].size;
-
+	uint32_t l2_access_time = 0;
+	icacheRefs++;
 	
 	for (int i=0; i<icache[index].size; i++) {
 		if (tag == icache[index].block[i]) {
@@ -172,7 +175,7 @@ icache_access(uint32_t addr)
 	}
 	
 	if (b_idx == -1) {    //Miss. It is a a new line
-		//l2cache_access(addr);
+		l2_access_time = l2cache_access(addr);
 		if (icache[index].size == 0) {		// First tag element, goes to the head of the queue
 			icache[index].block[0] = tag;
 			icache[index].size++;
@@ -186,7 +189,8 @@ icache_access(uint32_t addr)
 				icache[index].block[i-1] = icache[index].block[i];	
 			}
 			icache[index].block[size-1] = tag;
-		}	
+		}
+		icacheMisses++;
 	}
 	else {		// It is a hit. No size updates. Reshuffling to satisfy LRU policy.
 		
@@ -204,8 +208,10 @@ icache_access(uint32_t addr)
 			}
 			icache[index].block[size-1] = tag;
 		}
+		return icacheHitTime;
 	}
-  return memspeed;
+	icachePenalties += l2_access_time;
+    return l2_access_time + icacheHitTime;
 }
 
 // Perform a memory access through the dcache interface for the address 'addr'
@@ -213,11 +219,16 @@ icache_access(uint32_t addr)
 //
 uint32_t
 dcache_access(uint32_t addr)
-{
+{ 	if(dcacheSets==0){
+		return l2cache_access(addr);
+	}
    	int index = get_index_from_addr(addr, dcacheSets);
 	uint32_t tag   = get_tag_from_addr(addr, dcacheSets);	
 	int b_idx = -1;
 	int size = dcache[index].size;
+	uint32_t l2_access_time = 0;
+	
+	dcacheRefs++;
 	
 	for (int i=0; i<dcache[index].size; i++) {
 		if (tag == dcache[index].block[i]) {
@@ -227,7 +238,7 @@ dcache_access(uint32_t addr)
 	}
 	
 	if (b_idx == -1) {    //Miss. It is a a new line
-		//l2cache_access(addr);
+		l2_access_time = l2cache_access(addr);
 		if (dcache[index].size == 0) {		// First tag element, goes to the head of the queue
 			dcache[index].block[0] = tag;
 			dcache[index].size++;
@@ -241,7 +252,8 @@ dcache_access(uint32_t addr)
 				dcache[index].block[i-1] = dcache[index].block[i];	
 			}
 			dcache[index].block[size-1] = tag;
-		}	
+		}
+		dcacheMisses++;
 	}
 	else {		// It is a hit. No size updates. Reshuffling to satisfy LRU policy.
 		
@@ -259,8 +271,10 @@ dcache_access(uint32_t addr)
 			}
 			dcache[index].block[size-1] = tag;
 		}
+		return dcacheHitTime;
 	}
-  return memspeed;
+ 	dcachePenalties += l2_access_time;
+    return l2_access_time + dcacheHitTime;
 }
 
 // Perform a memory access to the l2cache for the address 'addr'
@@ -268,11 +282,15 @@ dcache_access(uint32_t addr)
 //
 uint32_t
 l2cache_access(uint32_t addr)
-{
+{ 	if(l2cacheSets==0){
+		return memspeed;
+	}
   	int index = get_index_from_addr(addr, l2cacheSets);
 	uint32_t tag   = get_tag_from_addr(addr, l2cacheSets);	
 	int b_idx = -1;
 	int size = l2cache[index].size;	
+	
+	l2cacheRefs++;
 	
 	for (int i=0; i<l2cache[index].size; i++) {
 		if (tag == l2cache[index].block[i]) {
@@ -300,6 +318,7 @@ l2cache_access(uint32_t addr)
 			remove_cache_line(icache, addr, icacheSets);
 			remove_cache_line(dcache, addr, dcacheSets);
 		}
+		l2cacheMisses++;
 	}
 	else {		// It is a hit. No size updates. Reshuffling to satisfy LRU policy.
 		
@@ -317,6 +336,8 @@ l2cache_access(uint32_t addr)
 			}
 			l2cache[index].block[size-1] = tag;
 		}
+		return l2cacheHitTime;
 	}
-  return memspeed;
+    l2cachePenalties += memspeed;
+    return memspeed + l2cacheHitTime;
 }
