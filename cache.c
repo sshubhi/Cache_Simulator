@@ -73,17 +73,19 @@ set* l2cache;
 
 uint32_t get_index_from_addr (uint32_t addr, uint32_t num_sets) {
 	if (num_sets == 1)
-		return 1;
+		return 0;
 	else {
 		int index_bits = (log2(num_sets - 1)) + 1;
 		int block_offset_bits = (log2(blocksize - 1)) + 1;
 		uint32_t index = addr >> block_offset_bits;
-		uint32_t mask = 1;
+		uint32_t mask = 1 << index_bits;
+		mask = mask - 1;
+		/*uint32_t mask = 1;
 		
 		for (int i = 0; i < index_bits-1; i++) {
 			mask = mask << 1;
 			mask = mask | 1;
-		}
+		}*/
 		index = index & mask;
 		return index;		
 	}
@@ -391,8 +393,8 @@ l2cache_access(uint32_t addr)
 				}
 				l2cache[index].block[size-1] = tag;
 				if (inclusive) {
-				remove_cache_line(icache, create_cache_addr(evict_index,evict_tag), icacheSets,icacheAssoc);
-				remove_cache_line(dcache, create_cache_addr(evict_index,evict_tag), dcacheSets,dcacheAssoc);
+					remove_cache_line(icache, create_cache_addr(evict_index,evict_tag), icacheSets,icacheAssoc);
+					remove_cache_line(dcache, create_cache_addr(evict_index,evict_tag), dcacheSets,dcacheAssoc);
 				}
 			}	
 			l2cacheMisses++;
